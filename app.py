@@ -8,16 +8,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="SEO Auditor Pro", page_icon="🔎", layout="wide")
 
-UA = "SEO-Auditor-Pro/3.0"
+UA = "SEO-Auditor-Pro/4.0"
 
 def normalize_url(url):
     url = url.strip()
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    return url
+    return url if url.startswith(("http://", "https://")) else "https://" + url
 
-def fetch(url, timeout):
-    return requests.get(
+def fetch(url, timeout=15, method="GET"):
+    return requests.request(
+        method,
         url,
         headers={"User-Agent": UA},
         timeout=timeout,
@@ -26,16 +25,14 @@ def fetch(url, timeout):
 
 def check_link(url, timeout):
     try:
-        r = requests.get(
-            url,
-            headers={"User-Agent": UA},
-            timeout=timeout,
-            allow_redirects=True,
-            stream=True
-        )
+        r = fetch(url, timeout, "HEAD")
+        # Some servers reject HEAD. Fall back to GET.
+        if r.status_code in (405, 403) or r.status_code >= 500:
+            r = fetch(url, timeout, "GET")
+
         status = r.status_code
         final_url = r.url
-        r.close()
+        redirects = len(r.history)
 
         if 200 <= status < 300:
             state = "Working"
@@ -52,37 +49,39 @@ def check_link(url, timeout):
             "URL": url,
             "Status": status,
             "State": state,
-            "Final URL": final_url
+            "Redirects": redirects,
+            "Final URL": final_url,
+            "Error": ""
         }
     except requests.RequestException as exc:
         return {
             "URL": url,
             "Status": None,
             "State": "Unreachable",
+            "Redirects": 0,
             "Final URL": "",
             "Error": str(exc)
         }
 
 def resource_status(url, timeout):
     try:
-        r = fetch(url, min(timeout, 10))
+        r = fetch(url, min(timeout, 10), "GET")
         return r.status_code
     except requests.RequestException:
         return None
 
-def audit(url, timeout, run_link_checker):
-    response = fetch(normalize_url(url), timeout)
+def score_group(items):
+    return round(sum(1 for _, passed, _ in items if passed) / len(items) * 100)
+
+def audit(url, timeout, run_links):
+    response = fetch(normalize_url(url), timeout, "GET")
     soup = BeautifulSoup(response.text, "html.parser")
     final_url = response.url
     host = urlparse(final_url).netloc
 
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
-
-    meta = soup.find(
-        "meta",
-        attrs={"name": re.compile(r"^description$", re.I)}
-    )
-    description = meta.get("content", "").strip() if meta else ""
+    desc_tag = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)})
+    description = desc_tag.get("content", "").strip() if desc_tag else ""
 
     h1 = [x.get_text(" ", strip=True) for x in soup.find_all("h1")]
     h2 = [x.get_text(" ", strip=True) for x in soup.find_all("h2")]
@@ -122,126 +121,107 @@ def audit(url, timeout, run_link_checker):
             seen.add(target)
             links.append(target)
 
-    internal_links = [
-        link for link in links
-        if urlparse(link).netloc == host
-    ]
-    external_links = [
-        link for link in links
-        if urlparse(link).netloc != host
-    ]
+    internal = [u for u in links if urlparse(u).netloc == host]
+    external = [u for u in links if urlparse(u).netloc != host]
 
-    robots_url = urljoin(final_url, "/robots.txt")
-    sitemap_url = urljoin(final_url, "/sitemap.xml")
-
-    robots_status = resource_status(robots_url, timeout)
-    sitemap_status = resource_status(sitemap_url, timeout)
+    robots_status = resource_status(
+        urljoin(final_url, "/robots.txt"), timeout
+    )
+    sitemap_status = resource_status(
+        urljoin(final_url, "/sitemap.xml"), timeout
+    )
 
     checks = [
-        (
-            "HTTPS",
-            final_url.startswith("https://"),
-            "Secure HTTPS connection detected."
-        ),
-        (
-            "Title",
-            10 <= len(title) <= 60,
-            f"Current length: {len(title)} characters."
-        ),
-        (
-            "Meta Description",
-            50 <= len(description) <= 160,
-            f"Current length: {len(description)} characters."
-        ),
-        (
-            "Exactly One H1",
-            len(h1) == 1,
-            f"Found {len(h1)} H1 tag(s)."
-        ),
-        (
-            "Image ALT Text",
-            len(missing_alt) == 0,
-            f"{len(missing_alt)} image(s) missing ALT text."
-        ),
-        (
-            "Canonical",
-            canonical is not None,
-            "Canonical tag found." if canonical else "Canonical tag missing."
-        ),
-        (
-            "Viewport",
-            viewport is not None,
-            "Viewport tag found." if viewport else "Viewport tag missing."
-        ),
-        (
-            "Open Graph",
-            bool(og_title and og_description),
-            "OG title and description found."
-            if og_title and og_description
-            else "Open Graph data is incomplete."
-        ),
-        (
-            "Robots.txt",
-            robots_status == 200,
-            f"HTTP status: {robots_status or 'unavailable'}."
-        ),
-        (
-            "Sitemap.xml",
-            sitemap_status == 200,
-            f"HTTP status: {sitemap_status or 'unavailable'}."
-        )
+        ("HTTPS", final_url.startswith("https://"),
+         "Secure HTTPS connection detected."),
+        ("Title", 10 <= len(title) <= 60,
+         f"Current length: {len(title)} characters."),
+        ("Meta Description", 50 <= len(description) <= 160,
+         f"Current length: {len(description)} characters."),
+        ("Exactly One H1", len(h1) == 1,
+         f"Found {len(h1)} H1 tag(s)."),
+        ("Image ALT Text", len(missing_alt) == 0,
+         f"{len(missing_alt)} image(s) missing ALT text."),
+        ("Canonical", canonical is not None,
+         "Canonical tag found." if canonical else "Canonical tag missing."),
+        ("Viewport", viewport is not None,
+         "Viewport tag found." if viewport else "Viewport tag missing."),
+        ("Open Graph", bool(og_title and og_description),
+         "OG title and description found."
+         if og_title and og_description
+         else "Open Graph data is incomplete."),
+        ("Robots.txt", robots_status == 200,
+         f"HTTP status: {robots_status or 'unavailable'}."),
+        ("Sitemap.xml", sitemap_status == 200,
+         f"HTTP status: {sitemap_status or 'unavailable'}.")
     ]
 
-    category_items = {
+    groups = {
         "Technical SEO": [checks[0], checks[5], checks[6], checks[8], checks[9]],
         "On-Page SEO": [checks[1], checks[2], checks[3]],
         "Images": [checks[4]],
         "Social/Mobile": [checks[7]]
     }
 
-    scores = {}
-
-    for category, items in category_items.items():
-        scores[category] = round(
-            sum(1 for _, passed, _ in items if passed)
-            / len(items)
-            * 100
-        )
+    scores = {name: score_group(items) for name, items in groups.items()}
 
     link_results = []
 
-    if run_link_checker and links:
-        targets = links[:100]
+    if run_links and links:
+        # Full scan: every discovered HTTP/HTTPS link.
+        progress = st.progress(0, text="Checking all discovered links...")
+        total = len(links)
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = [
-                executor.submit(check_link, link, min(timeout, 10))
-                for link in targets
-            ]
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            futures = {
+                executor.submit(check_link, link, min(timeout, 10)): link
+                for link in links
+            }
 
+            completed = 0
             for future in as_completed(futures):
                 link_results.append(future.result())
+                completed += 1
+                progress.progress(
+                    completed / total,
+                    text=f"Checking links: {completed}/{total}"
+                )
 
-    broken_links = [
-        item for item in link_results
-        if item["State"].startswith("Broken")
-        or item["State"] == "Unreachable"
-    ]
+        progress.empty()
 
-    redirects = [
-        item for item in link_results
-        if item["State"] == "Redirect"
+    broken = [
+        x for x in link_results
+        if x["State"].startswith("Broken")
+        or x["State"] == "Unreachable"
     ]
+    redirects = [x for x in link_results if x["Redirects"] > 0]
 
     if link_results:
         link_score = round(
-            (len(link_results) - len(broken_links))
+            (len(link_results) - len(broken))
             / len(link_results)
             * 100
         )
         scores["Links"] = link_score
 
-    overall_score = round(sum(scores.values()) / len(scores))
+    # Weighted overall score. Links are useful but should not dominate.
+    weights = {
+        "Technical SEO": 0.30,
+        "On-Page SEO": 0.30,
+        "Images": 0.10,
+        "Social/Mobile": 0.10,
+        "Links": 0.20
+    }
+
+    available_weights = {
+        k: v for k, v in weights.items() if k in scores
+    }
+    total_weight = sum(available_weights.values())
+
+    overall = round(
+        sum(scores[k] * available_weights[k] for k in available_weights)
+        / total_weight
+    )
 
     return {
         "response": response,
@@ -258,38 +238,36 @@ def audit(url, timeout, run_link_checker):
         "og_title": og_title,
         "og_description": og_description,
         "links": links,
-        "internal_links": internal_links,
-        "external_links": external_links,
+        "internal": internal,
+        "external": external,
         "robots_status": robots_status,
         "sitemap_status": sitemap_status,
         "checks": checks,
         "scores": scores,
-        "overall_score": overall_score,
+        "overall": overall,
         "link_results": link_results,
-        "broken_links": broken_links,
+        "broken": broken,
         "redirects": redirects
     }
 
 st.title("🔎 SEO Auditor Pro")
-st.caption("Professional website SEO analysis • Development Build v3")
+st.caption("Professional Website SEO Analysis • Development Build v4")
 
 with st.sidebar:
     st.header("Audit Settings")
+
     timeout = st.slider(
         "Request timeout (seconds)",
-        min_value=5,
-        max_value=30,
-        value=15
+        5, 30, 15
     )
 
-    run_link_checker = st.checkbox(
-        "Run Broken Link Checker",
+    run_links = st.checkbox(
+        "Run Full Broken Link Checker",
         value=True
     )
 
-    st.info(
-        "Public demo checks up to 100 unique links per audit "
-        "to keep the app responsive."
+    st.success(
+        "v4 scans every discovered HTTP/HTTPS link on the audited page."
     )
 
 website_url = st.text_input(
@@ -298,96 +276,64 @@ website_url = st.text_input(
 )
 
 if st.button("🚀 Run Full SEO Audit", type="primary"):
-
     if not website_url.strip():
         st.warning("Please enter a website URL.")
-
     else:
         try:
-            with st.spinner(
-                "Analyzing SEO, technical settings and links..."
-            ):
+            with st.spinner("Starting complete SEO audit..."):
                 data = audit(
                     website_url,
                     timeout,
-                    run_link_checker
+                    run_links
                 )
 
-            st.success("Audit completed successfully.")
+            st.success("Full audit completed successfully.")
 
-            col1, col2, col3, col4 = st.columns(4)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Overall SEO", f"{data['overall']}/100")
+            c2.metric("HTTP Status", data["response"].status_code)
+            c3.metric("Total Links", len(data["links"]))
+            c4.metric("Broken Links", len(data["broken"]))
 
-            col1.metric(
-                "Overall Score",
-                f"{data['overall_score']}/100"
-            )
-            col2.metric(
-                "HTTP Status",
-                data["response"].status_code
-            )
-            col3.metric(
-                "Total Links",
-                len(data["links"])
-            )
-            col4.metric(
-                "Broken Links",
-                len(data["broken_links"])
-            )
+            st.subheader("📊 Professional SEO Scorecard")
 
-            st.subheader("📊 SEO Scorecard")
-
-            score_columns = st.columns(len(data["scores"]))
-
-            for column, (name, score) in zip(
-                score_columns,
+            score_cols = st.columns(len(data["scores"]))
+            for col, (name, value) in zip(
+                score_cols,
                 data["scores"].items()
             ):
-                column.metric(name, f"{score}/100")
-                column.progress(score / 100)
+                col.metric(name, f"{value}/100")
+                col.progress(value / 100)
+
+            if data["overall"] >= 80:
+                st.success("Excellent SEO foundation.")
+            elif data["overall"] >= 60:
+                st.warning("Good foundation with several improvements recommended.")
+            else:
+                st.error("Major SEO improvements are recommended.")
 
             st.subheader("🧾 Page Overview")
 
-            st.write(
-                "**Final URL:**",
-                data["final_url"]
-            )
-            st.write(
-                "**Title:**",
-                data["title"] or "Missing"
-            )
-            st.write(
-                "**Meta Description:**",
-                data["description"] or "Missing"
-            )
+            st.write("**Final URL:**", data["final_url"])
+            st.write("**Title:**", data["title"] or "Missing")
+            st.write("**Meta Description:**", data["description"] or "Missing")
             st.write(
                 "**H1:**",
-                " | ".join(data["h1"])
-                if data["h1"]
-                else "Missing"
+                " | ".join(data["h1"]) if data["h1"] else "Missing"
             )
-            st.write(
-                "**H2 count:**",
-                len(data["h2"])
-            )
-            st.write(
-                "**H3 count:**",
-                len(data["h3"])
-            )
+            st.write("**H2 count:**", len(data["h2"]))
+            st.write("**H3 count:**", len(data["h3"]))
 
             st.subheader("🔍 SEO Checks")
 
-            check_rows = []
-
-            for name, passed, detail in data["checks"]:
-                check_rows.append({
+            check_rows = [
+                {
                     "Check": name,
-                    "Status": (
-                        "✅ PASS"
-                        if passed
-                        else "❌ NEEDS WORK"
-                    ),
+                    "Status": "✅ PASS" if passed else "❌ NEEDS WORK",
                     "Details": detail
-                })
+                }
+                for name, passed, detail in data["checks"]
+            ]
 
             checks_df = pd.DataFrame(check_rows)
 
@@ -397,33 +343,20 @@ if st.button("🚀 Run Full SEO Audit", type="primary"):
                 hide_index=True
             )
 
-            st.subheader("🔗 Link Health")
+            st.subheader("🔗 Full Link Health")
 
             if data["link_results"]:
-
                 a, b, c, d = st.columns(4)
 
-                a.metric(
-                    "Checked",
-                    len(data["link_results"])
-                )
+                a.metric("Checked", len(data["link_results"]))
                 b.metric(
                     "Working",
-                    len(data["link_results"])
-                    - len(data["broken_links"])
+                    len(data["link_results"]) - len(data["broken"])
                 )
-                c.metric(
-                    "Broken / Unreachable",
-                    len(data["broken_links"])
-                )
-                d.metric(
-                    "Redirects",
-                    len(data["redirects"])
-                )
+                c.metric("Broken / Unreachable", len(data["broken"]))
+                d.metric("Redirecting", len(data["redirects"]))
 
-                link_df = pd.DataFrame(
-                    data["link_results"]
-                )
+                link_df = pd.DataFrame(data["link_results"])
 
                 st.dataframe(
                     link_df,
@@ -431,40 +364,36 @@ if st.button("🚀 Run Full SEO Audit", type="primary"):
                     hide_index=True
                 )
 
-                if data["broken_links"]:
+                if data["broken"]:
                     st.error(
-                        f"Found {len(data['broken_links'])} "
-                        "broken or unreachable link(s)."
+                        f"{len(data['broken'])} broken or unreachable "
+                        "link(s) found."
+                    )
+
+                    broken_df = pd.DataFrame(data["broken"])
+                    st.markdown("### ❌ Broken Links Only")
+                    st.dataframe(
+                        broken_df,
+                        use_container_width=True,
+                        hide_index=True
                     )
                 else:
                     st.success(
-                        "No broken links were detected "
-                        "among the checked links."
+                        "No broken or unreachable links were detected."
                     )
-
-            elif run_link_checker:
-                st.info("No links were available to check.")
-
             else:
-                st.info(
-                    "Broken Link Checker is disabled."
-                )
+                st.info("Link checker was disabled or no links were found.")
 
             st.subheader("🖼️ Image Analysis")
 
-            st.write(
-                f"Total images: **{len(data['images'])}**"
-            )
+            st.write(f"Total images: **{len(data['images'])}**")
 
             if data["missing_alt"]:
                 st.error(
-                    f"{len(data['missing_alt'])} image(s) "
-                    "are missing ALT text."
+                    f"{len(data['missing_alt'])} image(s) are missing ALT text."
                 )
             else:
-                st.success(
-                    "All detected images have ALT text."
-                )
+                st.success("All detected images have ALT text.")
 
             st.subheader("🧰 Technical Resources")
 
@@ -472,23 +401,15 @@ if st.button("🚀 Run Full SEO Audit", type="primary"):
 
             a.metric(
                 "Robots.txt",
-                "Found"
-                if data["robots_status"] == 200
-                else "Not found"
+                "Found" if data["robots_status"] == 200 else "Not found"
             )
-
             b.metric(
                 "Sitemap.xml",
-                "Found"
-                if data["sitemap_status"] == 200
-                else "Not found"
+                "Found" if data["sitemap_status"] == 200 else "Not found"
             )
-
             c.metric(
                 "Canonical",
-                "Found"
-                if data["canonical"]
-                else "Missing"
+                "Found" if data["canonical"] else "Missing"
             )
 
             st.subheader("📣 Social / Mobile")
@@ -497,16 +418,12 @@ if st.button("🚀 Run Full SEO Audit", type="primary"):
 
             a.metric(
                 "Viewport",
-                "PASS"
-                if data["viewport"]
-                else "MISSING"
+                "PASS" if data["viewport"] else "MISSING"
             )
-
             b.metric(
                 "Open Graph",
                 "PASS"
-                if data["og_title"]
-                and data["og_description"]
+                if data["og_title"] and data["og_description"]
                 else "INCOMPLETE"
             )
 
@@ -520,65 +437,60 @@ if st.button("🚀 Run Full SEO Audit", type="primary"):
                         f"**{name}:** {detail}"
                     )
 
-            if data["broken_links"]:
+            if data["broken"]:
                 recommendations.append(
                     f"**Broken Links:** Fix or remove "
-                    f"{len(data['broken_links'])} "
-                    "broken/unreachable link(s)."
+                    f"{len(data['broken'])} broken/unreachable link(s)."
                 )
 
             if data["redirects"]:
                 recommendations.append(
                     f"**Redirects:** Review "
-                    f"{len(data['redirects'])} redirecting "
-                    "link(s) for unnecessary hops."
+                    f"{len(data['redirects'])} redirecting link(s)."
                 )
 
             if recommendations:
-                for item in recommendations:
-                    st.markdown("- " + item)
+                for recommendation in recommendations:
+                    st.markdown("- " + recommendation)
             else:
-                st.success(
-                    "No major issues were detected "
-                    "by the current checks."
-                )
+                st.success("No major issues detected by current checks.")
 
             report_rows = check_rows.copy()
 
-            if data["link_results"]:
-                report_rows.append({
-                    "Check": "Link Health",
-                    "Status": (
-                        "✅ PASS"
-                        if not data["broken_links"]
-                        else "❌ NEEDS WORK"
-                    ),
-                    "Details": (
-                        f"Checked {len(data['link_results'])}; "
-                        f"broken/unreachable: "
-                        f"{len(data['broken_links'])}; "
-                        f"redirects: {len(data['redirects'])}"
-                    )
-                })
+            report_rows.append({
+                "Check": "Overall SEO Score",
+                "Status": f"{data['overall']}/100",
+                "Details": "Weighted professional score"
+            })
+
+            report_rows.append({
+                "Check": "Link Health",
+                "Status": (
+                    "PASS"
+                    if not data["broken"]
+                    else "NEEDS WORK"
+                ),
+                "Details": (
+                    f"Checked {len(data['link_results'])}; "
+                    f"broken/unreachable {len(data['broken'])}; "
+                    f"redirecting {len(data['redirects'])}"
+                )
+            })
 
             report_df = pd.DataFrame(report_rows)
 
             st.download_button(
                 "⬇️ Download SEO Audit CSV",
                 report_df.to_csv(index=False).encode("utf-8"),
-                "seo_audit_v3.csv",
+                "seo_audit_v4.csv",
                 "text/csv"
             )
 
         except requests.RequestException as exc:
-            st.error(
-                f"Could not access the website: {exc}"
-            )
+            st.error(f"Could not access the website: {exc}")
 
         except Exception as exc:
-            st.error(
-                f"Audit error: {exc}"
-            )
+            st.error(f"Audit error: {exc}")
 
 st.divider()
-st.caption("SEO Auditor Pro v3 • Development build")
+st.caption("SEO Auditor Pro v4 • Development build")
