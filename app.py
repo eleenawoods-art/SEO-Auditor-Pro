@@ -371,164 +371,24 @@ if st.button("🚀 Run Complete Website Audit", type="primary"):
                 })
 
             st.dataframe(
-                pd.DataFrame(check_rows),
-                use_container_width=True,
-                hide_index=True
+                            # -------------------------------------------------
+            # PROFESSIONAL CSV EXPORT
+            # -------------------------------------------------
+
+            csv_data = filtered_df.to_csv(
+                index=False,
+                encoding="utf-8-sig"
             )
-
-            st.subheader("🔗 Full Link Health")
-
-            if link_results:
-                a, b, c, d = st.columns(4)
-                a.metric("Checked", len(link_results))
-                b.metric("Working", len(link_results) - len(broken))
-                c.metric("Broken / Unreachable", len(broken))
-                d.metric("Redirecting", len(redirects))
-
-                link_df = pd.DataFrame(link_results)
-                st.dataframe(
-                    link_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-                if broken:
-                    st.markdown("### ❌ Broken Links Only")
-                    st.dataframe(
-                        pd.DataFrame(broken),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.success("No broken or unreachable links detected.")
-
-            st.subheader("🖼️ Image Analysis")
-            st.write(f"Total images: **{len(info['images'])}**")
-
-            if len(info["images"]) == 0:
-                st.info("No images detected — Image SEO score is N/A.")
-            elif info["missing_alt"]:
-                st.error(
-                    f"{len(info['missing_alt'])} image(s) are missing ALT text."
-                )
-            else:
-                st.success("All detected images have ALT text.")
-
-            st.subheader("🧰 Technical Resources")
-            a, b, c = st.columns(3)
-            a.metric("Robots.txt", "Found" if robots == 200 else "Not found")
-            b.metric("Sitemap.xml", "Found" if sitemap == 200 else "Not found")
-            c.metric("Canonical", "Found" if info["canonical"] else "Missing")
-
-            if run_crawler:
-                st.subheader("🕷️ Website Crawl")
-                st.write(
-                    f"Pages discovered/crawled: **{len(crawl_pages)}** "
-                    f"(maximum set to {max_pages})"
-                )
-
-                if crawl_pages:
-                    crawl_df = pd.DataFrame(crawl_pages)
-                    st.dataframe(
-                        crawl_df,
-                        use_container_width=True,
-                        hide_index=True
-                    )
-
-                    missing_meta_pages = crawl_df[
-                        crawl_df["Meta Description"].fillna("").eq("")
-                    ]
-                    multiple_h1 = crawl_df[crawl_df["H1 Count"] > 1]
-                    no_h1 = crawl_df[crawl_df["H1 Count"] == 0]
-
-                    a, b, c = st.columns(3)
-                    a.metric("Missing Meta", len(missing_meta_pages))
-                    b.metric("Multiple H1", len(multiple_h1))
-                    c.metric("Missing H1", len(no_h1))
-
-            st.subheader("📣 Social / Mobile")
-            a, b = st.columns(2)
-            a.metric("Viewport", "PASS" if info["viewport"] else "MISSING")
-            b.metric(
-                "Open Graph",
-                "PASS" if info["og_title"] and info["og_description"]
-                else "INCOMPLETE"
-            )
-
-            st.subheader("💡 Recommendations")
-
-            recommendations = []
-
-            for name, passed, detail in info["checks"]:
-                if not passed:
-                    if name == "H1 Structure" and len(info["h1"]) > 1:
-                        recommendations.append(
-                            f"**H1 Structure:** Found {len(info['h1'])} H1 tags. "
-                            "Use one primary H1 and move other headings to H2/H3 where appropriate."
-                        )
-                    else:
-                        recommendations.append(f"**{name}:** {detail}")
-
-            if broken:
-                recommendations.append(
-                    f"**Broken Links:** Fix {len(broken)} broken/unreachable link(s)."
-                )
-
-            if redirects:
-                recommendations.append(
-                    f"**Redirects:** Review {len(redirects)} redirecting link(s) "
-                    "and remove unnecessary redirect chains."
-                )
-
-            if crawl_pages:
-                missing_meta_count = sum(
-                    not row["Meta Description"]
-                    for row in crawl_pages
-                )
-                if missing_meta_count:
-                    recommendations.append(
-                        f"**Crawl:** {missing_meta_count} crawled page(s) "
-                        "have no meta description."
-                    )
-
-            if recommendations:
-                for recommendation in recommendations:
-                    st.markdown("- " + recommendation)
-            else:
-                st.success("No major issues detected.")
-
-            report_rows = check_rows.copy()
-            report_rows.extend([
-                {
-                    "Check": "Overall SEO Score",
-                    "Status": f"{overall}/100",
-                    "Details": "Weighted score excluding unavailable categories."
-                },
-                {
-                    "Check": "Broken Links",
-                    "Status": "PASS" if not broken else "NEEDS WORK",
-                    "Details": f"Checked {len(link_results)}; broken/unreachable {len(broken)}."
-                },
-                {
-                    "Check": "Redirects",
-                    "Status": "INFO",
-                    "Details": f"{len(redirects)} redirecting link(s) detected."
-                }
-            ])
-
-            report_df = pd.DataFrame(report_rows)
 
             st.download_button(
-                "⬇️ Download SEO Audit CSV",
-                report_df.to_csv(index=False).encode("utf-8"),
-                "seo_audit_v5.csv",
-                "text/csv"
+                "📥 Download CSV Report",
+                data=csv_data,
+                file_name=(
+                    "SEO_Audit_Report_"
+                    + (client_name or "Client")
+                    .replace(" ", "_")
+                    + ".csv"
+                ),
+                mime="text/csv",
+                use_container_width=True,
             )
-
-        except requests.RequestException as exc:
-            st.error(f"Could not access the website: {exc}")
-        except Exception as exc:
-            st.error(f"Audit error: {exc}")
-
-st.divider()
-st.caption("SEO Auditor Pro • Professional Website SEO Analysis")
