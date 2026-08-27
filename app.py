@@ -360,22 +360,114 @@ if st.button("🚀 Run Complete Website Audit", type="primary"):
             st.write("**H2 count:**", len(info["h2"]))
             st.write("**H3 count:**", len(info["h3"]))
 
-            st.subheader("🔍 SEO Checks")
+         
+              
+                      st.subheader("🔍 SEO Checks")
 
             check_rows = []
+
             for name, passed, detail in info["checks"]:
                 check_rows.append({
                     "Check": name,
-                    "Status": "✅ PASS" if passed else "⚠️ NEEDS WORK",
+                    "Status": "PASS" if passed else "NEEDS WORK",
                     "Details": detail
                 })
 
+            findings_df = pd.DataFrame(check_rows)
+
+            # Professional status filtering
+            filter_status = st.selectbox(
+                "Filter SEO Checks",
+                ["All", "PASS", "NEEDS WORK"],
+                key="seo_check_filter"
+            )
+
+            if filter_status == "All":
+                filtered_df = findings_df.copy()
+            else:
+                filtered_df = findings_df[
+                    findings_df["Status"] == filter_status
+                ].copy()
 
             st.dataframe(
                 filtered_df,
                 use_container_width=True,
                 hide_index=True,
             )
+
+            # -------------------------------------------------
+            # CRAWLED PAGES
+            # -------------------------------------------------
+
+            if run_crawler:
+                st.subheader("🕷️ Crawled Pages")
+
+                if crawl_pages:
+                    crawl_df = pd.DataFrame(crawl_pages)
+
+                    st.dataframe(
+                        crawl_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    st.caption(
+                        f"{len(crawl_pages)} page(s) analyzed "
+                        f"out of a maximum of {max_pages}."
+                    )
+                else:
+                    st.info(
+                        "No additional same-domain pages were successfully crawled."
+                    )
+
+            # -------------------------------------------------
+            # BROKEN LINKS
+            # -------------------------------------------------
+
+            if run_links:
+                st.subheader("🔗 Link Analysis")
+
+                if link_results:
+                    link_df = pd.DataFrame(link_results)
+
+                    link_filter = st.selectbox(
+                        "Filter Links",
+                        ["All", "Working", "Redirect", "Broken", "Unreachable"],
+                        key="link_filter"
+                    )
+
+                    if link_filter == "Working":
+                        display_links = link_df[
+                            link_df["State"] == "Working"
+                        ]
+                    elif link_filter == "Redirect":
+                        display_links = link_df[
+                            link_df["State"] == "Redirect"
+                        ]
+                    elif link_filter == "Broken":
+                        display_links = link_df[
+                            link_df["State"].str.startswith("Broken", na=False)
+                        ]
+                    elif link_filter == "Unreachable":
+                        display_links = link_df[
+                            link_df["State"] == "Unreachable"
+                        ]
+                    else:
+                        display_links = link_df
+
+                    st.dataframe(
+                        display_links,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    st.caption(
+                        f"Checked {len(link_results)} link(s): "
+                        f"{len(broken)} broken/unreachable, "
+                        f"{len(redirects)} redirect(s)."
+                    )
+                else:
+                    st.info("No links were found or link checking was disabled.")
 
             # -------------------------------------------------
             # PROFESSIONAL CSV EXPORT
@@ -389,11 +481,7 @@ if st.button("🚀 Run Complete Website Audit", type="primary"):
             st.download_button(
                 "📥 Download CSV Report",
                 data=csv_data,
-                file_name=(
-                    "SEO_Audit_Report_"
-                    + (client_name or "Client").replace(" ", "_")
-                    + ".csv"
-                ),
+                file_name="SEO_Audit_Report.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
