@@ -370,12 +370,18 @@ if st.button("🚀 Run Complete Website Audit", type="primary"):
                     "Details": detail
                 })
 
+
             st.dataframe(
-                            # -------------------------------------------------
+                filtered_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # -------------------------------------------------
             # PROFESSIONAL CSV EXPORT
             # -------------------------------------------------
 
-            csv_data = filtered_df.to_csv(
+            csv_data = findings_df.to_csv(
                 index=False,
                 encoding="utf-8-sig"
             )
@@ -385,8 +391,7 @@ if st.button("🚀 Run Complete Website Audit", type="primary"):
                 data=csv_data,
                 file_name=(
                     "SEO_Audit_Report_"
-                    + (client_name or "Client")
-                    .replace(" ", "_")
+                    + (client_name or "Client").replace(" ", "_")
                     + ".csv"
                 ),
                 mime="text/csv",
