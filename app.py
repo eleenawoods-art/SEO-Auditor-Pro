@@ -8,7 +8,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
+from io import BytesIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    PageBreak,
+)
+from reportlab.lib.units import inch
 
 # =========================================================
 # PAGE CONFIG
