@@ -6,216 +6,66 @@ import pandas as pd
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from io import BytesIO
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-    PageBreak,
-)
-from reportlab.lib.units import inch
 
-# =========================================================
-# PAGE CONFIG
-# =========================================================
+st.set_page_config(page_title="SEO Auditor Pro", page_icon="🔎", layout="wide", initial_sidebar_state="expanded")
 
-st.set_page_config(
-    page_title="SEO Auditor Pro",
-    page_icon="🔎",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-UA = "SEO-Auditor-Pro/5.1"
-
-
-# =========================================================
-# HELPERS
-# =========================================================
+UA = "SEO-Auditor-Pro/5.0"
 
 def normalize_url(url):
     url = url.strip()
-    if not url:
-        return ""
     return url if url.startswith(("http://", "https://")) else "https://" + url
 
-
-def canonicalize_url(url):
-    """Normalize URLs for deduplication while preserving useful paths."""
-    try:
-        parsed = urlparse(url)
-        scheme = parsed.scheme.lower()
-        netloc = parsed.netloc.lower()
-        path = parsed.path or "/"
-        if path != "/" and path.endswith("/"):
-            path = path.rstrip("/")
-        return f"{scheme}://{netloc}{path}" + (f"?{parsed.query}" if parsed.query else "")
-    except Exception:
-        return url
-
-
 def same_site(a, b):
-    try:
-        return urlparse(a).netloc.lower().split(":")[0] == urlparse(b).netloc.lower().split(":")[0]
-    except Exception:
-        return False
-
-
-def build_session():
-    session = requests.Session()
-
-    retries = Retry(
-        total=1,
-        connect=1,
-        read=1,
-        backoff_factor=0.3,
-        status_forcelist=(502, 503, 504),
-        allowed_methods=frozenset(["GET", "HEAD"]),
-        raise_on_status=False,
-    )
-
-    adapter = HTTPAdapter(
-        max_retries=retries,
-        pool_connections=20,
-        pool_maxsize=20,
-    )
-
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    session.headers.update({"User-Agent": UA})
-    return session
-
-
-SESSION = build_session()
-
+    return urlparse(a).netloc.lower() == urlparse(b).netloc.lower()
 
 def fetch(url, timeout=15, method="GET"):
-    return SESSION.request(
+    return requests.request(
         method,
         url,
+        headers={"User-Agent": UA},
         timeout=timeout,
-        allow_redirects=True,
+        allow_redirects=True
     )
-
-
-# =========================================================
-# LINK CHECKING
-# =========================================================
-
-def classify_link_status(status):
-    if status is None:
-        return "Unreachable"
-
-    if 200 <= status < 300:
-        return "Working"
-
-    if 300 <= status < 400:
-        return "Redirect"
-
-    if status == 404:
-        return "Broken (404)"
-
-    if status in (401, 403):
-        return f"Blocked ({status})"
-
-    if status == 408:
-        return "Timeout (408)"
-
-    if status == 429:
-        return "Rate Limited (429)"
-
-    if 400 <= status < 500:
-        return f"Client Error ({status})"
-
-    if 500 <= status < 600:
-        return f"Server Error ({status})"
-
-    return f"HTTP {status}"
-
 
 def check_link(url, timeout):
     try:
-        response = fetch(url, min(timeout, 10), "HEAD")
+        r = fetch(url, timeout, "HEAD")
+        if r.status_code in (403, 405) or r.status_code >= 500:
+            r = fetch(url, timeout, "GET")
+        status = r.status_code
+        final_url = r.url
+        redirects = len(r.history)
 
-        # Some servers do not support HEAD. Retry with GET.
-        if response.status_code in (403, 405) or response.status_code >= 500:
-            response = fetch(url, min(timeout, 10), "GET")
-
-        status = response.status_code
-        final_url = response.url
-        redirects = len(response.history)
-        state = classify_link_status(status)
+        if 200 <= status < 300:
+            state = "Working"
+        elif 300 <= status < 400:
+            state = "Redirect"
+        elif status == 404:
+            state = "Broken (404)"
+        elif status >= 400:
+            state = f"Broken ({status})"
+        else:
+            state = "Unknown"
 
         return {
-            "URL": url,
-            "Status": status,
-            "State": state,
-            "Redirects": redirects,
-            "Final URL": final_url,
-            "Error": "",
+            "URL": url, "Status": status, "State": state,
+            "Redirects": redirects, "Final URL": final_url, "Error": ""
         }
-
-    except requests.TooManyRedirects as exc:
-        return {
-            "URL": url,
-            "Status": None,
-            "State": "Unreachable",
-            "Redirects": 0,
-            "Final URL": "",
-            "Error": f"Too many redirects: {exc}",
-        }
-
     except requests.RequestException as exc:
         return {
-            "URL": url,
-            "Status": None,
-            "State": "Unreachable",
-            "Redirects": 0,
-            "Final URL": "",
-            "Error": str(exc),
+            "URL": url, "Status": None, "State": "Unreachable",
+            "Redirects": 0, "Final URL": "", "Error": str(exc)
         }
-
 
 def resource_status(url, timeout):
     try:
-        response = fetch(url, min(timeout, 10), "GET")
-        return response.status_code
+        return fetch(url, min(timeout, 10), "GET").status_code
     except requests.RequestException:
         return None
 
-
-def is_link_problem(state):
-    return (
-        state.startswith("Broken")
-        or state.startswith("Server Error")
-        or state == "Unreachable"
-        or state.startswith("Client Error")
-    )
-
-
-def is_rate_limited(state):
-    return state.startswith("Rate Limited") or state.startswith("Blocked")
-
-
-# =========================================================
-# PAGE SEO CHECKS
-# =========================================================
-
 def page_checks(soup, final_url):
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
-
-    desc_tag = soup.find(
-        "meta",
-        attrs={"name": re.compile(r"^description$", re.I)},
-    )
+    desc_tag = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)})
     description = desc_tag.get("content", "").strip() if desc_tag else ""
 
     h1 = [x.get_text(" ", strip=True) for x in soup.find_all("h1")]
@@ -223,246 +73,105 @@ def page_checks(soup, final_url):
     h3 = [x.get_text(" ", strip=True) for x in soup.find_all("h3")]
 
     images = soup.find_all("img")
-    missing_alt = [
-        img.get("src", "")
-        for img in images
-        if not img.get("alt", "").strip()
-    ]
+    missing_alt = [img.get("src", "") for img in images if not img.get("alt", "").strip()]
 
-    canonical = soup.find(
-        "link",
-        rel=lambda value: value and "canonical" in value,
-    )
-
-    viewport = soup.find(
-        "meta",
-        attrs={"name": re.compile(r"^viewport$", re.I)},
-    )
-
+    canonical = soup.find("link", rel=lambda value: value and "canonical" in value)
+    viewport = soup.find("meta", attrs={"name": re.compile(r"^viewport$", re.I)})
     og_title = soup.find("meta", property="og:title")
     og_description = soup.find("meta", property="og:description")
 
-    robots_meta = soup.find(
-        "meta",
-        attrs={"name": re.compile(r"^robots$", re.I)},
-    )
-
     title_ok = 10 <= len(title) <= 60
     meta_ok = 50 <= len(description) <= 160
-
-    h1_ok = len(h1) == 1
-    images_ok = len(images) == 0 or len(missing_alt) == 0
-    canonical_ok = canonical is not None
-    viewport_ok = viewport is not None
-    og_ok = bool(og_title and og_description)
+    h1_status = "PASS" if len(h1) == 1 else ("WARNING" if len(h1) > 1 else "ERROR")
 
     checks = [
-        (
-            "HTTPS",
-            final_url.startswith("https://"),
-            "Secure HTTPS connection detected."
-            if final_url.startswith("https://")
-            else "Page is not using HTTPS.",
-        ),
-        (
-            "Title",
-            title_ok,
-            f"Current length: {len(title)} characters."
-            if title
-            else "Title tag is missing.",
-        ),
-        (
-            "Meta Description",
-            meta_ok,
-            f"Current length: {len(description)} characters."
-            if description
-            else "Meta description is missing.",
-        ),
-        (
-            "H1 Structure",
-            h1_ok,
-            f"Found {len(h1)} H1 tag(s)."
-            if h1_ok
-            else f"Found {len(h1)} H1 tag(s). Recommended: exactly 1.",
-        ),
-        (
-            "Image ALT Text",
-            images_ok,
-            "All images have ALT text."
-            if len(images) > 0
-            else "No images found (N/A).",
-        ),
-        (
-            "Canonical",
-            canonical_ok,
-            "Canonical tag found."
-            if canonical_ok
-            else "Canonical tag is missing.",
-        ),
-        (
-            "Viewport",
-            viewport_ok,
-            "Viewport tag found."
-            if viewport_ok
-            else "Viewport tag is missing.",
-        ),
-        (
-            "Open Graph",
-            og_ok,
-            "OG title and description found."
-            if og_ok
-            else "Open Graph data is incomplete.",
-        ),
-        (
-            "Robots Meta",
-            True,
-            "Robots meta tag found."
-            if robots_meta
-            else "No robots meta tag found; search engines will use default behavior.",
-        ),
+        ("HTTPS", final_url.startswith("https://"), "Secure HTTPS connection detected."),
+        ("Title", title_ok, f"Current length: {len(title)} characters."),
+        ("Meta Description", meta_ok, f"Current length: {len(description)} characters."),
+        ("H1 Structure", h1_status == "PASS", f"Found {len(h1)} H1 tag(s). {h1_status}."),
+        ("Image ALT Text", len(images) == 0 or len(missing_alt) == 0,
+         "No images found (N/A)." if len(images) == 0 else f"{len(missing_alt)} image(s) missing ALT text."),
+        ("Canonical", canonical is not None, "Canonical tag found." if canonical else "Canonical tag missing."),
+        ("Viewport", viewport is not None, "Viewport tag found." if viewport else "Viewport tag missing."),
+        ("Open Graph", bool(og_title and og_description),
+         "OG title and description found." if og_title and og_description else "Open Graph data is incomplete."),
     ]
 
     return {
-        "title": title,
-        "description": description,
-        "h1": h1,
-        "h2": h2,
-        "h3": h3,
-        "images": images,
-        "missing_alt": missing_alt,
-        "canonical": canonical,
-        "viewport": viewport,
-        "og_title": og_title,
-        "og_description": og_description,
-        "robots_meta": robots_meta,
-        "checks": checks,
+        "title": title, "description": description, "h1": h1, "h2": h2, "h3": h3,
+        "images": images, "missing_alt": missing_alt, "canonical": canonical,
+        "viewport": viewport, "og_title": og_title, "og_description": og_description,
+        "checks": checks
     }
-
-
-# =========================================================
-# CRAWLER
-# =========================================================
 
 def crawl_site(start_url, max_pages, timeout):
     start_url = normalize_url(start_url)
-
     queue = deque([start_url])
-    queued = {canonicalize_url(start_url)}
+    queued = {start_url}
     visited = set()
     pages = []
-
     progress = st.progress(0, text="Crawling website...")
 
-    while queue and len(pages) < max_pages:
+    while queue and len(visited) < max_pages:
         current = queue.popleft()
-        current_key = canonicalize_url(current)
-
-        if current_key in visited:
+        if current in visited:
             continue
 
         try:
             response = fetch(current, timeout, "GET")
             final_url = response.url
-
             if not same_site(start_url, final_url):
-                visited.add(current_key)
-                continue
-
-            if response.status_code >= 400:
-                visited.add(current_key)
+                visited.add(current)
                 continue
 
             soup = BeautifulSoup(response.text, "html.parser")
             info = page_checks(soup, final_url)
 
-            final_key = canonicalize_url(final_url)
+            pages.append({
+                "URL": final_url,
+                "Status": response.status_code,
+                "Title": info["title"],
+                "Meta Description": info["description"],
+                "H1 Count": len(info["h1"]),
+                "H2 Count": len(info["h2"]),
+                "Images": len(info["images"]),
+                "Missing ALT": len(info["missing_alt"]),
+                "Canonical": "Yes" if info["canonical"] else "No",
+            })
+            visited.add(current)
 
-            # Prevent duplicate pages caused by redirects.
-            if final_key not in {
-                canonicalize_url(p["URL"]) for p in pages
-            }:
-                pages.append(
-                    {
-                        "URL": final_url,
-                        "Status": response.status_code,
-                        "Title": info["title"],
-                        "Meta Description": info["description"],
-                        "H1 Count": len(info["h1"]),
-                        "H2 Count": len(info["h2"]),
-                        "H3 Count": len(info["h3"]),
-                        "Images": len(info["images"]),
-                        "Missing ALT": len(info["missing_alt"]),
-                        "Canonical": "Yes" if info["canonical"] else "No",
-                    }
-                )
-
-            visited.add(current_key)
-
-            for anchor in soup.find_all("a", href=True):
-                raw_href = anchor.get("href", "").strip()
-
-                if not raw_href:
-                    continue
-
-                if raw_href.startswith(("#", "mailto:", "tel:", "javascript:")):
-                    continue
-
-                target = urljoin(final_url, raw_href).split("#")[0]
+            for a in soup.find_all("a", href=True):
+                target = urljoin(final_url, a["href"]).split("#")[0]
                 parsed = urlparse(target)
-
-                if parsed.scheme not in ("http", "https"):
-                    continue
-
-                if not same_site(start_url, target):
-                    continue
-
-                target_key = canonicalize_url(target)
-
-                if target_key not in queued and len(queued) < max_pages * 4:
-                    queued.add(target_key)
-                    queue.append(target)
+                if parsed.scheme in ("http", "https") and same_site(start_url, target):
+                    if target not in queued and len(queued) < max_pages * 3:
+                        queued.add(target)
+                        queue.append(target)
 
         except requests.RequestException:
-            visited.add(current_key)
-
+            visited.add(current)
         except Exception:
-            visited.add(current_key)
+            visited.add(current)
 
         progress.progress(
-            min(len(pages) / max_pages, 1.0),
-            text=f"Crawling pages: {len(pages)}/{max_pages}",
+            min(len(visited) / max_pages, 1.0),
+            text=f"Crawling pages: {len(visited)}/{max_pages}"
         )
 
     progress.empty()
     return pages
 
-
-# =========================================================
-# SCORING
-# =========================================================
-
 def calculate_scores(checks, link_results, image_count):
-    check_map = {name: ok for name, ok, _ in checks}
-
     def passed(name):
-        return bool(check_map.get(name, False))
+        return next(ok for n, ok, _ in checks if n == name)
 
     technical_items = [
-        passed("HTTPS"),
-        passed("Canonical"),
-        passed("Viewport"),
+        passed("HTTPS"), passed("Canonical"), passed("Viewport")
     ]
-
     onpage_items = [
-        passed("Title"),
-        passed("Meta Description"),
-        passed("H1 Structure"),
+        passed("Title"), passed("Meta Description"), passed("H1 Structure")
     ]
-
-    social_items = [
-        passed("Viewport"),
-        passed("Open Graph"),
-    ]
+    social_items = [passed("Viewport"), passed("Open Graph")]
 
     technical = round(sum(technical_items) / len(technical_items) * 100)
     onpage = round(sum(onpage_items) / len(onpage_items) * 100)
@@ -477,189 +186,63 @@ def calculate_scores(checks, link_results, image_count):
         "Technical SEO": technical,
         "On-Page SEO": onpage,
         "Images": image_score,
-        "Social/Mobile": social,
+        "Social/Mobile": social
     }
 
     if link_results:
-        serious_problems = sum(
-            1 for item in link_results if is_link_problem(item["State"])
+        broken = sum(
+            1 for x in link_results
+            if x["State"].startswith("Broken") or x["State"] == "Unreachable"
         )
-
-        scores["Links"] = round(
-            (len(link_results) - serious_problems)
-            / len(link_results)
-            * 100
-        )
+        scores["Links"] = round((len(link_results) - broken) / len(link_results) * 100)
 
     weights = {
         "Technical SEO": 0.30,
         "On-Page SEO": 0.30,
         "Images": 0.10,
         "Social/Mobile": 0.10,
-        "Links": 0.20,
+        "Links": 0.20
     }
 
     numerator = 0
     denominator = 0
-
     for key, weight in weights.items():
         value = scores.get(key)
-
         if value is not None:
             numerator += value * weight
             denominator += weight
 
     overall = round(numerator / denominator) if denominator else 0
-
     return scores, overall
 
-
-# =========================================================
-# REPORT DATA
-# =========================================================
-
-def make_check_rows(checks):
-    rows = []
-
-    for name, passed, detail in checks:
-        rows.append(
-            {
-                "Section": "SEO Checks",
-                "Check": name,
-                "Status": "PASS" if passed else "NEEDS WORK",
-                "Details": detail,
-            }
-        )
-
-    return rows
-
-
-def make_link_rows(link_results):
-    rows = []
-
-    for item in link_results:
-        rows.append(
-            {
-                "Section": "Link Analysis",
-                "Check": "",
-                "Status": item["Status"] if item["Status"] is not None else "",
-                "Details": "",
-                "URL": item["URL"],
-                "State": item["State"],
-                "Redirects": item["Redirects"],
-                "Final URL": item["Final URL"],
-                "Error": item["Error"],
-            }
-        )
-
-    return rows
-
-
-def make_crawl_rows(crawl_pages):
-    rows = []
-
-    for page in crawl_pages:
-        rows.append(
-            {
-                "Section": "Crawled Pages",
-                "Check": "",
-                "Status": page["Status"],
-                "Details": "",
-                "URL": page["URL"],
-                "State": "",
-                "Redirects": "",
-                "Final URL": "",
-                "Error": "",
-                "Title": page["Title"],
-                "Meta Description": page["Meta Description"],
-                "H1 Count": page["H1 Count"],
-                "H2 Count": page["H2 Count"],
-                "H3 Count": page["H3 Count"],
-                "Images": page["Images"],
-                "Missing ALT": page["Missing ALT"],
-                "Canonical": page["Canonical"],
-            }
-        )
-
-    return rows
-
-
-def build_findings_dataframe(checks, link_results, crawl_pages):
-    rows = []
-
-    rows.extend(make_check_rows(checks))
-    rows.extend(make_link_rows(link_results))
-    rows.extend(make_crawl_rows(crawl_pages))
-
-    if not rows:
-        return pd.DataFrame()
-
-    columns = [
-        "Section",
-        "Check",
-        "Status",
-        "Details",
-        "URL",
-        "State",
-        "Redirects",
-        "Final URL",
-        "Error",
-        "Title",
-        "Meta Description",
-        "H1 Count",
-        "H2 Count",
-        "H3 Count",
-        "Images",
-        "Missing ALT",
-        "Canonical",
-    ]
-
-    df = pd.DataFrame(rows)
-
-    for column in columns:
-        if column not in df.columns:
-            df[column] = ""
-
-    return df[columns]
-
-
-# =========================================================
-# UI
-# =========================================================
-
 st.title("🔎 SEO Auditor Pro")
-st.caption("Professional Website SEO Analysis & Technical Audit")
+st.caption("Professional Website SEO Analysis")
 
 with st.sidebar:
-    st.header("⚙️ Audit Settings")
+    st.header("Audit Settings")
 
-    timeout = st.slider(
-        "Request timeout (seconds)",
-        min_value=5,
-        max_value=30,
-        value=15,
-    )
+    timeout = st.slider("Request timeout (seconds)", 5, 30, 15)
 
     run_links = st.checkbox(
         "Run Full Broken Link Checker",
-        value=True,
+        value=True
     )
 
     run_crawler = st.checkbox(
         "Crawl Website Pages",
-        value=True,
+        value=True
     )
 
     max_pages = st.slider(
         "Maximum pages to crawl",
         min_value=1,
         max_value=50,
-        value=10,
+        value=10
     )
 
     st.info(
-        "Analyze on-page SEO, technical signals, links, images, "
-        "social/mobile data, and same-domain pages from one dashboard."
+        "Analyze on-page SEO, technical signals, links, images, social/mobile data, "
+        "and crawl same-domain pages from one dashboard."
     )
 
     st.markdown("---")
@@ -669,217 +252,84 @@ with st.sidebar:
         "Website crawler • CSV report"
     )
 
-
 website_url = st.text_input(
     "Website URL",
-    placeholder="https://example.com",
+    placeholder="https://example.com"
 )
 
-client_name = st.text_input(
-    "Client / Project Name",
-    placeholder="Client Website",
-)
-
-
-# =========================================================
-# RUN AUDIT
-# =========================================================
-
-if st.button("🚀 Run Complete Website Audit", type="primary", use_container_width=True):
-
+if st.button("🚀 Run Complete Website Audit", type="primary"):
     if not website_url.strip():
         st.warning("Please enter a website URL.")
-
     else:
         try:
-            normalized = normalize_url(website_url)
-
             with st.spinner("Running complete audit..."):
-
-                # -------------------------------------------------
-                # MAIN PAGE
-                # -------------------------------------------------
-
-                first_response = fetch(normalized, timeout, "GET")
+                first_response = fetch(normalize_url(website_url), timeout, "GET")
                 soup = BeautifulSoup(first_response.text, "html.parser")
                 final_url = first_response.url
-
                 info = page_checks(soup, final_url)
-
-                # -------------------------------------------------
-                # LINK DISCOVERY
-                # -------------------------------------------------
 
                 links = []
                 seen = set()
 
-                for anchor in soup.find_all("a", href=True):
-                    raw_href = anchor.get("href", "").strip()
-
-                    if not raw_href:
-                        continue
-
-                    if raw_href.startswith(
-                        ("#", "mailto:", "tel:", "javascript:")
-                    ):
-                        continue
-
-                    target = urljoin(final_url, raw_href).split("#")[0]
+                for a in soup.find_all("a", href=True):
+                    target = urljoin(final_url, a["href"]).split("#")[0]
                     parsed = urlparse(target)
-
-                    if parsed.scheme not in ("http", "https"):
-                        continue
-
-                    target_key = canonicalize_url(target)
-
-                    if target_key not in seen:
-                        seen.add(target_key)
+                    if parsed.scheme in ("http", "https") and target not in seen:
+                        seen.add(target)
                         links.append(target)
-
-                # -------------------------------------------------
-                # LINK CHECKING
-                # -------------------------------------------------
 
                 link_results = []
 
                 if run_links and links:
-
-                    progress = st.progress(
-                        0,
-                        text="Checking page links...",
-                    )
-
+                    progress = st.progress(0, text="Checking all page links...")
                     with ThreadPoolExecutor(max_workers=12) as executor:
-
                         futures = [
-                            executor.submit(
-                                check_link,
-                                link,
-                                min(timeout, 10),
-                            )
+                            executor.submit(check_link, link, min(timeout, 10))
                             for link in links
                         ]
-
                         total = len(futures)
-
-                        for i, future in enumerate(
-                            as_completed(futures),
-                            1,
-                        ):
-                            try:
-                                link_results.append(future.result())
-                            except Exception as exc:
-                                link_results.append(
-                                    {
-                                        "URL": "",
-                                        "Status": None,
-                                        "State": "Unreachable",
-                                        "Redirects": 0,
-                                        "Final URL": "",
-                                        "Error": str(exc),
-                                    }
-                                )
-
-                            progress.progress(
-                                i / total,
-                                text=f"Checking links: {i}/{total}",
-                            )
-
+                        for i, future in enumerate(as_completed(futures), 1):
+                            link_results.append(future.result())
+                            progress.progress(i / total, text=f"Checking links: {i}/{total}")
                     progress.empty()
 
-                # -------------------------------------------------
-                # ROBOTS / SITEMAP
-                # -------------------------------------------------
+                robots = resource_status(urljoin(final_url, "/robots.txt"), timeout)
+                sitemap = resource_status(urljoin(final_url, "/sitemap.xml"), timeout)
 
-                robots_url = urljoin(final_url, "/robots.txt")
-                sitemap_url = urljoin(final_url, "/sitemap.xml")
-
-                robots = resource_status(robots_url, timeout)
-                sitemap = resource_status(sitemap_url, timeout)
-
-                info["checks"].extend(
-                    [
-                        (
-                            "Robots.txt",
-                            robots == 200,
-                            f"HTTP status: {robots if robots is not None else 'unavailable'}.",
-                        ),
-                        (
-                            "Sitemap.xml",
-                            sitemap == 200,
-                            f"HTTP status: {sitemap if sitemap is not None else 'unavailable'}.",
-                        ),
-                    ]
-                )
-
-                # -------------------------------------------------
-                # SCORE
-                # -------------------------------------------------
+                info["checks"].extend([
+                    ("Robots.txt", robots == 200, f"HTTP status: {robots or 'unavailable'}."),
+                    ("Sitemap.xml", sitemap == 200, f"HTTP status: {sitemap or 'unavailable'}.")
+                ])
 
                 scores, overall = calculate_scores(
-                    info["checks"],
+                    info["checks"][:8],
                     link_results,
-                    len(info["images"]),
+                    len(info["images"])
                 )
-
-                # -------------------------------------------------
-                # CRAWLER
-                # -------------------------------------------------
 
                 if run_crawler:
                     crawl_pages = crawl_site(
                         final_url,
                         max_pages,
-                        timeout,
+                        timeout
                     )
                 else:
                     crawl_pages = []
 
-            # =====================================================
-            # RESULTS
-            # =====================================================
-
-            st.success("✅ Complete audit finished successfully.")
+            st.success("Complete audit finished successfully.")
 
             broken = [
-                item
-                for item in link_results
-                if is_link_problem(item["State"])
+                x for x in link_results
+                if x["State"].startswith("Broken")
+                or x["State"] == "Unreachable"
             ]
+            redirects = [x for x in link_results if x["Redirects"] > 0]
 
-            redirects = [
-                item
-                for item in link_results
-                if item["Redirects"] > 0
-            ]
-
-            rate_limited = [
-                item
-                for item in link_results
-                if is_rate_limited(item["State"])
-            ]
-
-            # -----------------------------------------------------
-            # TOP METRICS
-            # -----------------------------------------------------
-
-            c1, c2, c3, c4, c5 = st.columns(5)
-
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Overall SEO", f"{overall}/100")
             c2.metric("HTTP Status", first_response.status_code)
             c3.metric("Total Links", len(links))
-            c4.metric("Broken / Errors", len(broken))
-            c5.metric("Redirects", len(redirects))
-
-            if rate_limited:
-                st.info(
-                    f"ℹ️ {len(rate_limited)} link(s) returned blocked/rate-limited "
-                    "responses. These are not automatically treated as confirmed broken pages."
-                )
-
-            # -----------------------------------------------------
-            # SCORECARD
-            # -----------------------------------------------------
+            c4.metric("Broken Links", len(broken))
 
             st.subheader("📊 Professional SEO Scorecard")
 
@@ -895,208 +345,190 @@ if st.button("🚀 Run Complete Website Audit", type="primary", use_container_wi
                     col.progress(value / 100)
 
             if overall >= 80:
-                st.success("🟢 Excellent SEO foundation.")
+                st.success("Excellent SEO foundation.")
             elif overall >= 60:
-                st.warning(
-                    "🟡 Good foundation with several improvements recommended."
-                )
+                st.warning("Good foundation with several improvements recommended.")
             else:
-                st.error(
-                    "🔴 Major SEO improvements are recommended."
-                )
-
-            # -----------------------------------------------------
-            # PAGE OVERVIEW
-            # -----------------------------------------------------
+                st.error("Major SEO improvements are recommended.")
 
             st.subheader("🧾 Page Overview")
-
-            overview1, overview2 = st.columns(2)
-
-            with overview1:
-                st.write("**Final URL:**", final_url)
-                st.write(
-                    "**Title:**",
-                    info["title"] or "Missing",
-                )
-                st.write(
-                    "**Meta Description:**",
-                    info["description"] or "Missing",
-                )
-
-            with overview2:
-                st.write(
-                    "**H1:**",
-                    " | ".join(info["h1"])
-                    if info["h1"]
-                    else "Missing",
-                )
-                st.write("**H1 count:**", len(info["h1"]))
-                st.write("**H2 count:**", len(info["h2"]))
-                st.write("**H3 count:**", len(info["h3"]))
-
-            # -----------------------------------------------------
-            # SEO CHECKS - SEPARATE TABLE
-            # -----------------------------------------------------
+            st.write("**Final URL:**", final_url)
+            st.write("**Title:**", info["title"] or "Missing")
+            st.write("**Meta Description:**", info["description"] or "Missing")
+            st.write("**H1:**", " | ".join(info["h1"]) if info["h1"] else "Missing")
+            st.write("**H1 count:**", len(info["h1"]))
+            st.write("**H2 count:**", len(info["h2"]))
+            st.write("**H3 count:**", len(info["h3"]))
 
             st.subheader("🔍 SEO Checks")
 
             check_rows = []
-
             for name, passed, detail in info["checks"]:
-                check_rows.append(
-                    {
-                        "Check": name,
-                        "Status": "✅ PASS" if passed else "⚠️ NEEDS WORK",
-                        "Details": detail,
-                    }
-                )
-
-            checks_df = pd.DataFrame(check_rows)
+                check_rows.append({
+                    "Check": name,
+                    "Status": "✅ PASS" if passed else "⚠️ NEEDS WORK",
+                    "Details": detail
+                })
 
             st.dataframe(
-                checks_df,
+                pd.DataFrame(check_rows),
                 use_container_width=True,
-                hide_index=True,
+                hide_index=True
             )
 
-            # -----------------------------------------------------
-            # LINK ANALYSIS
-            # -----------------------------------------------------
+            st.subheader("🔗 Full Link Health")
 
-            if run_links:
-                st.subheader("🔗 Link Analysis")
+            if link_results:
+                a, b, c, d = st.columns(4)
+                a.metric("Checked", len(link_results))
+                b.metric("Working", len(link_results) - len(broken))
+                c.metric("Broken / Unreachable", len(broken))
+                d.metric("Redirecting", len(redirects))
 
-                if link_results:
+                link_df = pd.DataFrame(link_results)
+                st.dataframe(
+                    link_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
 
-                    link_df = pd.DataFrame(link_results)
-
-                    link_display = link_df[
-                        [
-                            "URL",
-                            "Status",
-                            "State",
-                            "Redirects",
-                            "Final URL",
-                            "Error",
-                        ]
-                    ].copy()
-
+                if broken:
+                    st.markdown("### ❌ Broken Links Only")
                     st.dataframe(
-                        link_display,
+                        pd.DataFrame(broken),
                         use_container_width=True,
-                        hide_index=True,
+                        hide_index=True
                     )
-
                 else:
-                    st.info("No links were found on the audited page.")
+                    st.success("No broken or unreachable links detected.")
 
-            # -----------------------------------------------------
-            # CRAWLED PAGES
-            # -----------------------------------------------------
+            st.subheader("🖼️ Image Analysis")
+            st.write(f"Total images: **{len(info['images'])}**")
+
+            if len(info["images"]) == 0:
+                st.info("No images detected — Image SEO score is N/A.")
+            elif info["missing_alt"]:
+                st.error(
+                    f"{len(info['missing_alt'])} image(s) are missing ALT text."
+                )
+            else:
+                st.success("All detected images have ALT text.")
+
+            st.subheader("🧰 Technical Resources")
+            a, b, c = st.columns(3)
+            a.metric("Robots.txt", "Found" if robots == 200 else "Not found")
+            b.metric("Sitemap.xml", "Found" if sitemap == 200 else "Not found")
+            c.metric("Canonical", "Found" if info["canonical"] else "Missing")
 
             if run_crawler:
-                st.subheader("🕷️ Crawled Pages")
+                st.subheader("🕷️ Website Crawl")
+                st.write(
+                    f"Pages discovered/crawled: **{len(crawl_pages)}** "
+                    f"(maximum set to {max_pages})"
+                )
 
                 if crawl_pages:
                     crawl_df = pd.DataFrame(crawl_pages)
-
                     st.dataframe(
                         crawl_df,
                         use_container_width=True,
-                        hide_index=True,
+                        hide_index=True
                     )
-                else:
-                    st.info("No additional same-domain pages were crawled.")
 
-            # -----------------------------------------------------
-            # ACTION PLAN
-            # -----------------------------------------------------
+                    missing_meta_pages = crawl_df[
+                        crawl_df["Meta Description"].fillna("").eq("")
+                    ]
+                    multiple_h1 = crawl_df[crawl_df["H1 Count"] > 1]
+                    no_h1 = crawl_df[crawl_df["H1 Count"] == 0]
 
-            st.subheader("🛠️ Recommended Action Plan")
+                    a, b, c = st.columns(3)
+                    a.metric("Missing Meta", len(missing_meta_pages))
+                    b.metric("Multiple H1", len(multiple_h1))
+                    c.metric("Missing H1", len(no_h1))
 
-            action_items = []
+            st.subheader("📣 Social / Mobile")
+            a, b = st.columns(2)
+            a.metric("Viewport", "PASS" if info["viewport"] else "MISSING")
+            b.metric(
+                "Open Graph",
+                "PASS" if info["og_title"] and info["og_description"]
+                else "INCOMPLETE"
+            )
+
+            st.subheader("💡 Recommendations")
+
+            recommendations = []
 
             for name, passed, detail in info["checks"]:
                 if not passed:
-                    recommendations = {
-                        "HTTPS": "Enable HTTPS and redirect HTTP URLs to HTTPS.",
-                        "Title": "Add or optimize the page title to approximately 10–60 characters.",
-                        "Meta Description": "Add a useful meta description of approximately 50–160 characters.",
-                        "H1 Structure": "Use one clear primary H1 heading for the page.",
-                        "Image ALT Text": "Add descriptive ALT text to images that need accessibility/SEO context.",
-                        "Canonical": "Add a valid canonical URL to identify the preferred version of the page.",
-                        "Viewport": "Add a responsive viewport meta tag for mobile usability.",
-                        "Open Graph": "Add og:title and og:description for better social sharing previews.",
-                        "Robots.txt": "Review and publish a valid robots.txt file.",
-                        "Sitemap.xml": "Create or expose an XML sitemap and reference it from robots.txt.",
-                    }
-
-                    action_items.append(
-                        recommendations.get(
-                            name,
-                            f"Review the {name} check.",
+                    if name == "H1 Structure" and len(info["h1"]) > 1:
+                        recommendations.append(
+                            f"**H1 Structure:** Found {len(info['h1'])} H1 tags. "
+                            "Use one primary H1 and move other headings to H2/H3 where appropriate."
                         )
-                    )
+                    else:
+                        recommendations.append(f"**{name}:** {detail}")
 
             if broken:
-                action_items.append(
-                    f"Review {len(broken)} link(s) returning confirmed HTTP/client/server errors."
+                recommendations.append(
+                    f"**Broken Links:** Fix {len(broken)} broken/unreachable link(s)."
                 )
 
             if redirects:
-                action_items.append(
-                    f"Review {len(redirects)} redirected link(s) and update internal links where practical."
+                recommendations.append(
+                    f"**Redirects:** Review {len(redirects)} redirecting link(s) "
+                    "and remove unnecessary redirect chains."
                 )
 
-            if not action_items:
-                st.success(
-                    "🎉 No major action items were detected by the current checks."
+            if crawl_pages:
+                missing_meta_count = sum(
+                    not row["Meta Description"]
+                    for row in crawl_pages
                 )
+                if missing_meta_count:
+                    recommendations.append(
+                        f"**Crawl:** {missing_meta_count} crawled page(s) "
+                        "have no meta description."
+                    )
+
+            if recommendations:
+                for recommendation in recommendations:
+                    st.markdown("- " + recommendation)
             else:
-                for i, item in enumerate(action_items, 1):
-                    st.markdown(f"**{i}.** {item}")
+                st.success("No major issues detected.")
 
-            # -----------------------------------------------------
-            # PROFESSIONAL CSV EXPORT
-            # -----------------------------------------------------
+            report_rows = check_rows.copy()
+            report_rows.extend([
+                {
+                    "Check": "Overall SEO Score",
+                    "Status": f"{overall}/100",
+                    "Details": "Weighted score excluding unavailable categories."
+                },
+                {
+                    "Check": "Broken Links",
+                    "Status": "PASS" if not broken else "NEEDS WORK",
+                    "Details": f"Checked {len(link_results)}; broken/unreachable {len(broken)}."
+                },
+                {
+                    "Check": "Redirects",
+                    "Status": "INFO",
+                    "Details": f"{len(redirects)} redirecting link(s) detected."
+                }
+            ])
 
-            st.subheader("📥 Export Report")
-
-            findings_df = build_findings_dataframe(
-                info["checks"],
-                link_results,
-                crawl_pages,
-            )
-
-            csv_data = findings_df.to_csv(
-                index=False,
-                encoding="utf-8-sig",
-            )
-
-            safe_client = (
-                (client_name.strip() or "Client")
-                .replace(" ", "_")
-                .replace("/", "_")
-                .replace("\\", "_")
-            )
+            report_df = pd.DataFrame(report_rows)
 
             st.download_button(
-                "📥 Download Professional CSV Report",
-                data=csv_data,
-                file_name=f"SEO_Audit_Report_{safe_client}.csv",
-                mime="text/csv",
-                use_container_width=True,
+                "⬇️ Download SEO Audit CSV",
+                report_df.to_csv(index=False).encode("utf-8"),
+                "seo_audit_v5.csv",
+                "text/csv"
             )
 
         except requests.RequestException as exc:
-            st.error(
-                "❌ Unable to access the website. "
-                f"Please check the URL and try again.\n\nDetails: {exc}"
-            )
-
+            st.error(f"Could not access the website: {exc}")
         except Exception as exc:
-            st.error(
-                "❌ Audit failed unexpectedly."
-            )
-            st.exception(exc)
+            st.error(f"Audit error: {exc}")
+
+st.divider()
+st.caption("SEO Auditor Pro • Professional Website SEO Analysis")
