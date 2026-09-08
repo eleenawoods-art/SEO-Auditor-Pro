@@ -1,4 +1,137 @@
-SEO Auditor Pro
-Commercial software project.
+# SEO Auditor Pro
 
-Replace this placeholder with the final commercial license before distribution.
+## Commercial Software License
+
+**Copyright © 2026 SEO Auditor Pro. All rights reserved.**
+
+This software project, including its source code, documentation, configuration files, and related materials, is provided under the terms of this Commercial Software License.
+
+By purchasing, downloading, accessing, or using this software, you agree to the terms of this license.
+
+---
+
+## 1. License Grant
+
+The purchaser is granted a limited, non-exclusive, non-transferable license to:
+
+* Install and use the software.
+* Run the software for personal, internal, agency, or commercial business purposes.
+* Modify the source code for their own use.
+* Customize the software to meet their own business or project requirements.
+* Deploy the software on their own server or hosting environment.
+
+This license applies only to the purchaser/licensee and does not transfer ownership of the software.
+
+---
+
+## 2. Restrictions
+
+The purchaser may **not**:
+
+* Resell the original software or source code as a standalone product.
+* Redistribute, share, upload, or publish the source code publicly.
+* Upload the complete source code to GitHub, GitLab, Bitbucket, or another public repository.
+* Sell, sublicense, rent, lease, or otherwise transfer the software to another person or business.
+* Create a competing marketplace listing using the original software or substantially unchanged source code.
+* Claim ownership of the original software or its original source code.
+* Remove copyright or ownership notices where applicable.
+* Distribute the software as a competing template, script, starter kit, or source-code product.
+
+---
+
+## 3. Commercial Use
+
+Commercial use is permitted.
+
+The purchaser may use the software as part of their own business, agency, service, SaaS, internal tool, or client work.
+
+However, the purchaser may not sell or distribute the software itself, or substantially unchanged versions of its source code, as a standalone product.
+
+---
+
+## 4. Modifications
+
+The purchaser may modify the source code for their own projects.
+
+Modified versions remain subject to this license when they contain substantial portions of the original SEO Auditor Pro source code.
+
+Modifications do not transfer ownership of the original source code to the purchaser.
+
+---
+
+## 5. Intellectual Property
+
+SEO Auditor Pro and its original source code remain the intellectual property of the original copyright holder.
+
+This license grants usage rights only. It does not constitute a sale or transfer of intellectual property ownership.
+
+---
+
+## 6. Third-Party Components
+
+SEO Auditor Pro may use third-party libraries, frameworks, fonts, icons, or other components that are distributed under their own licenses.
+
+Those components remain subject to their respective licenses.
+
+This license does not override or replace the license terms of third-party software.
+
+The purchaser is responsible for complying with applicable third-party license requirements when modifying or distributing the software.
+
+---
+
+## 7. No Warranty
+
+The software is provided **"as is"** and **"as available"**, without warranties of any kind, express or implied.
+
+The copyright holder does not guarantee that:
+
+* The software will operate without errors.
+* The software will work with every website or hosting environment.
+* SEO results or recommendations will always be accurate.
+* The software will remain compatible with future versions of Python, Streamlit, browsers, or third-party services.
+
+---
+
+## 8. Limitation of Liability
+
+To the maximum extent permitted by applicable law, the copyright holder shall not be liable for any indirect, incidental, special, consequential, or business losses resulting from the use or inability to use the software.
+
+The purchaser is responsible for evaluating the software before using it in production or client environments.
+
+---
+
+## 9. License Termination
+
+This license terminates automatically if the purchaser materially violates the terms of this agreement.
+
+Upon termination, the purchaser must stop distributing the software and cease any unauthorized use.
+
+Termination does not affect rights or obligations that arose before termination.
+
+---
+
+## 10. Transfer
+
+This license is granted to the original purchaser/licensee and may not be transferred, resold, sublicensed, or assigned to another person or organization without written permission from the copyright holder.
+
+---
+
+## 11. Acceptance
+
+By purchasing or using SEO Auditor Pro, the purchaser acknowledges that they have read, understood, and agreed to this Commercial Software License.
+
+If the purchaser does not agree with these terms, they must not use or distribute the software.
+
+---
+
+## 12. Contact
+
+For licensing questions, commercial licensing, redistribution permissions, or other licensing requests, contact the software copyright holder through the official marketplace or contact method associated with the product.
+
+---
+
+**SEO Auditor Pro**
+
+**Commercial Software Project**
+
+**Copyright © 2026. All rights reserved.**
